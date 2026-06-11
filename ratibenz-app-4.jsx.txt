@@ -1,0 +1,719 @@
+import { useState, useEffect, useRef } from "react";
+
+// ─── RATIBENZ CONFIGURATION ───────────────────────────────────────────────────
+const ARTIST = {
+  name: "RATIBENZ",
+  wallet: "TBSACtsVVx4YejNAjvHQxDBehd22F9TztZ",
+  tronscan: "https://tronscan.org/#/address/TBSACtsVVx4YejNAjvHQxDBehd22F9TztZ",
+};
+
+const TRACKS = [
+  {
+    id: 1,
+    title: "BELIEVE",
+    artist: "RATIBENZ",
+    tier: "free",
+    duration: "0:00",
+    plays: "0",
+    vibe: "🔥",
+    // Convert Google Drive view link to direct stream link
+    url: "https://drive.google.com/uc?export=download&id=1OGYN0vadIrzVyf85GtJ8w4OzibsH5XAT",
+    wf: [40,70,55,90,35,80,60,95,45,75,65,50,85,30,70,55,90,40,80,60],
+  },
+  {
+    id: 2,
+    title: "SEASON",
+    artist: "RATIBENZ",
+    tier: "free",
+    duration: "0:00",
+    plays: "0",
+    vibe: "🌊",
+    url: "https://drive.google.com/uc?export=download&id=1evx6Ssx0-UUbz3aFspIQ_xdOKDXBbHbb",
+    wf: [60,45,85,30,75,55,90,40,80,65,50,95,35,70,60,85,45,75,55,90],
+  },
+];
+
+const TIERS = [
+  { id:"free",   label:"Fan",       icon:"🎵", color:"#7070A0", wave:0,     trx:0   },
+  { id:"vibe",   label:"Vibe Pass", icon:"🌊", color:"#4AAFFF", wave:500,   trx:0   },
+  { id:"pulse",  label:"Pulse",     icon:"⚡", color:"#A855F7", wave:2000,  trx:0   },
+  { id:"elite",  label:"Elite Fan", icon:"👑", color:"#FFB830", wave:0,     trx:250 },
+  { id:"legend", label:"Legend",    icon:"◈",  color:"#E8FF3C", wave:50000, trx:250 },
+];
+
+const CHAT_INIT = [
+  { id:1, user:"NanaAba",    badge:"🎵", msg:"BELIEVE just hit different bro 🔥", time:"2m" },
+  { id:2, user:"KwameVibes", badge:"🌊", msg:"SEASON on repeat since morning no cap", time:"5m" },
+  { id:3, user:"Fatima_TRX", badge:"👑", msg:"Elite tier unlocked 👑 worth every TRX", time:"8m" },
+];
+
+const TRX_PER_PLAY = 0.1;
+const WAVE_PER_MIN = 2;
+const STREAK_MULT  = [1,1.2,1.5,1.8,2.0,2.5,3.0];
+
+const C = {
+  bg:      "#07070F",
+  surface: "#0F0F1C",
+  card:    "#161624",
+  border:  "#222236",
+  accent:  "#E8FF3C",
+  gold:    "#FFB830",
+  text:    "#EEEEFF",
+  muted:   "#606080",
+  green:   "#4AFF88",
+  red:     "#FF4444",
+};
+
+export default function App() {
+  const [screen,       setScreen]      = useState("auth");
+  const [authMode,     setAuthMode]    = useState("login");
+  const [user,         setUser]        = useState(null);
+  const [tierIdx,      setTierIdx]     = useState(0);
+  const [wave,         setWave]        = useState(0);
+  const [trx,          setTrx]        = useState(10.0);
+  const [streak,       setStreak]      = useState(1);
+  const [currentTrack, setCurrentTrack]= useState(null);
+  const [isPlaying,    setIsPlaying]   = useState(false);
+  const [progress,     setProgress]    = useState(0);
+  const [chatMsgs,     setChatMsgs]    = useState(CHAT_INIT);
+  const [chatInput,    setChatInput]   = useState("");
+  const [modal,        setModal]       = useState(null);
+  const [modalTier,    setModalTier]   = useState(null);
+  const [authForm,     setAuthForm]    = useState({name:"",email:"",phone:"",password:""});
+  const [rewardPop,    setRewardPop]   = useState(null);
+  const [earnAnim,     setEarnAnim]    = useState(false);
+  const [txStatus,     setTxStatus]    = useState(null);
+  const [totalMins,    setTotalMins]   = useState(0);
+
+  const audioRef    = useRef(null);
+  const chatEndRef  = useRef(null);
+  const progRef     = useRef(null);
+  const earnRef     = useRef(null);
+  const waveAccRef  = useRef(0);
+
+  const streakMult  = STREAK_MULT[Math.min(streak-1, STREAK_MULT.length-1)];
+  const currentTier = TIERS[tierIdx];
+  const nextTier    = TIERS[tierIdx+1];
+
+  // ── AUDIO ENGINE ────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!audioRef.current) {
+      audioRef.current = new Audio();
+      audioRef.current.crossOrigin = "anonymous";
+    }
+    const audio = audioRef.current;
+
+    const onTimeUpdate = () => {
+      if (audio.duration) setProgress((audio.currentTime / audio.duration) * 100);
+    };
+    const onEnded = () => { setIsPlaying(false); setProgress(0); };
+
+    audio.addEventListener("timeupdate", onTimeUpdate);
+    audio.addEventListener("ended", onEnded);
+    return () => {
+      audio.removeEventListener("timeupdate", onTimeUpdate);
+      audio.removeEventListener("ended", onEnded);
+    };
+  }, []);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !currentTrack) return;
+    if (isPlaying) {
+      audio.src = currentTrack.url;
+      audio.play().catch(() => {
+        // fallback: simulate progress if CORS blocks
+        progRef.current = setInterval(() => setProgress(p => p >= 100 ? 0 : p + 0.2), 100);
+      });
+      earnRef.current = setInterval(() => {
+        const earned = (WAVE_PER_MIN / 60) * streakMult;
+        waveAccRef.current += earned;
+        if (waveAccRef.current >= 1) {
+          const w = Math.floor(waveAccRef.current);
+          waveAccRef.current -= w;
+          setWave(prev => {
+            const next = prev + w;
+            autoUpgrade(next);
+            return next;
+          });
+          setTotalMins(m => m + 1/60);
+          setEarnAnim(true);
+          setTimeout(() => setEarnAnim(false), 800);
+        }
+        setTrx(b => Math.max(0, b - TRX_PER_PLAY/60));
+      }, 1000);
+    } else {
+      audio.pause();
+      clearInterval(progRef.current);
+      clearInterval(earnRef.current);
+    }
+    return () => { clearInterval(progRef.current); clearInterval(earnRef.current); };
+  }, [isPlaying, currentTrack]);
+
+  useEffect(() => { chatEndRef.current?.scrollIntoView({behavior:"smooth"}); }, [chatMsgs]);
+
+  const autoUpgrade = (newWave) => {
+    TIERS.forEach((t, i) => {
+      if (t.wave > 0 && newWave >= t.wave && i > tierIdx && t.trx === 0) {
+        setTierIdx(i);
+        showReward({title:`${t.icon} ${t.label} Unlocked!`, sub:"Stream-earned tier upgrade!", color:t.color});
+      }
+    });
+  };
+
+  const showReward = (data) => { setRewardPop(data); setTimeout(() => setRewardPop(null), 3000); };
+
+  const playTrack = (track) => {
+    if (trx < TRX_PER_PLAY) { setModal("topup"); return; }
+    setCurrentTrack(track);
+    setIsPlaying(true);
+    setProgress(0);
+    setScreen("player");
+  };
+
+  const doAuth = () => {
+    if (!authForm.email || !authForm.password) return;
+    setUser({ name: authForm.name || authForm.email.split("@")[0], email: authForm.email, phone: authForm.phone });
+    setScreen("home");
+  };
+
+  const sendChat = () => {
+    if (!chatInput.trim()) return;
+    setChatMsgs(p => [...p, { id:Date.now(), user:user?.name||"Fan", badge:currentTier.icon, msg:chatInput, time:"now" }]);
+    setChatInput("");
+  };
+
+  const doTrxUnlock = () => {
+    if (!modalTier || trx < modalTier.trx) return;
+    setTxStatus("pending");
+    setTimeout(() => {
+      setTxStatus("confirmed");
+      setTrx(b => b - modalTier.trx);
+      const idx = TIERS.findIndex(t => t.id === modalTier.id);
+      setTimeout(() => {
+        setTierIdx(idx);
+        setModal(null);
+        setTxStatus(null);
+        showReward({title:`${modalTier.icon} ${modalTier.label} Unlocked!`, sub:"TRX payment confirmed on Tron!", color:modalTier.color});
+      }, 1200);
+    }, 3000);
+  };
+
+  // ── SHARED COMPONENTS ───────────────────────────────────────────────────────
+  const RewardPop = () => rewardPop ? (
+    <div style={{...S.rewardPop, borderColor:rewardPop.color, boxShadow:`0 0 30px ${rewardPop.color}40`}}>
+      <p style={{...S.rewardTitle, color:rewardPop.color}}>{rewardPop.title}</p>
+      <p style={S.rewardSub}>{rewardPop.sub}</p>
+    </div>
+  ) : null;
+
+  const EarnBubble = () => earnAnim ? (
+    <div style={S.earnBubble}>+{(WAVE_PER_MIN*streakMult/60).toFixed(3)} WAVE</div>
+  ) : null;
+
+  const BottomNav = () => (
+    <div style={S.nav}>
+      {[{id:"home",icon:"◈",label:"Home"},{id:"player",icon:"▶",label:"Player"},{id:"earn",icon:"💠",label:"Earn"},{id:"chat",icon:"💬",label:"Chat"},{id:"tiers",icon:"🏆",label:"Tiers"}].map(n => (
+        <button key={n.id} onClick={() => setScreen(n.id)}
+          style={{...S.navBtn, ...(screen===n.id?{color:C.accent}:{})}}>
+          <span style={{fontSize:18}}>{n.icon}</span>
+          <span style={{fontSize:9,letterSpacing:1}}>{n.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+
+  const WalletBar = () => (
+    <div style={S.walletBar}>
+      <div style={S.wItem}>
+        <span style={S.wLabel}>TRX</span>
+        <span style={{...S.wVal, color: trx<1?"#FF4444":"#fff"}}>{trx.toFixed(1)}</span>
+      </div>
+      <div style={S.wDiv}/>
+      <div style={S.wItem}>
+        <span style={S.wLabel}>WAVE</span>
+        <span style={{...S.wVal, color:C.accent}}>{wave.toFixed(1)}</span>
+      </div>
+      <div style={S.wDiv}/>
+      <div style={S.wItem}>
+        <span style={S.wLabel}>STREAK</span>
+        <span style={{...S.wVal, color:"#FF6B35"}}>🔥{streak}d</span>
+      </div>
+      <button onClick={() => setModal("topup")} style={S.topupBtn}>+TRX</button>
+    </div>
+  );
+
+  // ── MODAL ───────────────────────────────────────────────────────────────────
+  const Modal = () => {
+    if (!modal) return null;
+
+    if (modal === "topup") return (
+      <div style={S.overlay}>
+        <div style={S.sheet}>
+          <p style={S.sheetTitle}>💳 Top Up TRX</p>
+          <p style={S.sheetSub}>Send TRX to artist wallet to top up</p>
+          <div style={S.topupGrid}>
+            {[10,50,100,250].map(amt => (
+              <button key={amt} onClick={() => { setTrx(b=>b+amt); setModal(null); }} style={S.topupOption}>
+                <span style={{fontSize:22,fontWeight:700,color:C.text}}>{amt}</span>
+                <span style={{fontSize:10,color:C.muted,letterSpacing:2}}>TRX</span>
+              </button>
+            ))}
+          </div>
+          <div style={S.walletBox}>
+            <p style={{fontSize:10,color:C.muted,letterSpacing:2,margin:"0 0 6px"}}>ARTIST WALLET (send TRX here)</p>
+            <p style={{fontSize:11,color:C.accent,wordBreak:"break-all",margin:0}}>{ARTIST.wallet}</p>
+          </div>
+          <button onClick={() => setModal(null)} style={S.closeBtn}>✕ Cancel</button>
+        </div>
+      </div>
+    );
+
+    if (modal === "unlock" && modalTier) return (
+      <div style={S.overlay}>
+        <div style={S.sheet}>
+          <p style={S.sheetTitle}>{modalTier.icon} Unlock {modalTier.label}</p>
+
+          {/* PATH A: Earn WAVE */}
+          {modalTier.wave > 0 && (
+            <div style={{...S.pathCard, borderColor: wave>=modalTier.wave?"#4AFF88":C.border}}>
+              <p style={S.pathLabel}>PATH A · Stream to Earn Free</p>
+              <p style={S.pathVal}><span style={{color:C.accent}}>{wave.toFixed(0)}</span> / {modalTier.wave} WAVE</p>
+              <div style={S.pathTrack}><div style={{...S.pathFill,width:`${Math.min((wave/modalTier.wave)*100,100)}%`,background:C.accent}}/></div>
+              {wave >= modalTier.wave
+                ? <button onClick={() => { setTierIdx(TIERS.findIndex(t=>t.id===modalTier.id)); setModal(null); showReward({title:`${modalTier.icon} Unlocked!`,sub:"Stream-earned!",color:modalTier.color}); }}
+                    style={{...S.pathBtn,background:"#4AFF88",color:"#000"}}>Claim Free Unlock ✓</button>
+                : <p style={{fontSize:11,color:C.muted,margin:0}}>~{Math.ceil((modalTier.wave-wave)/(WAVE_PER_MIN*streakMult))} mins of streaming left</p>
+              }
+            </div>
+          )}
+
+          {/* PATH B: Pay TRX */}
+          {modalTier.trx > 0 && (
+            <div style={{...S.pathCard,borderColor:modalTier.color,marginTop:10}}>
+              <p style={S.pathLabel}>PATH B · Pay with TRX</p>
+              <p style={S.pathVal}><span style={{color:modalTier.color}}>{modalTier.trx} TRX</span> one-time</p>
+              <p style={{fontSize:11,color:C.muted,margin:"0 0 12px"}}>Your balance: {trx.toFixed(1)} TRX {trx<modalTier.trx?"⚠️ need more":"✓ sufficient"}</p>
+              <div style={S.walletBox}>
+                <p style={{fontSize:9,color:C.muted,letterSpacing:2,margin:"0 0 4px"}}>SEND TO ARTIST WALLET</p>
+                <p style={{fontSize:10,color:C.accent,wordBreak:"break-all",margin:0}}>{ARTIST.wallet}</p>
+              </div>
+              {txStatus==="pending"
+                ? <div style={{textAlign:"center",padding:"16px 0"}}><div style={S.spinner}/><p style={{color:C.muted,fontSize:12,margin:0}}>Confirming on Tron blockchain...</p></div>
+                : txStatus==="confirmed"
+                ? <div style={{textAlign:"center",padding:16}}><p style={{fontSize:28,margin:0}}>🎉</p><p style={{color:"#4AFF88",margin:0}}>Confirmed!</p></div>
+                : <button onClick={doTrxUnlock} disabled={trx<modalTier.trx}
+                    style={{...S.pathBtn,background:trx>=modalTier.trx?modalTier.color:C.border,color:trx>=modalTier.trx?"#000":"#666"}}>
+                    Pay {modalTier.trx} TRX →
+                  </button>
+              }
+            </div>
+          )}
+
+          <button onClick={() => { setModal(null); setTxStatus(null); }} style={S.closeBtn}>✕ Close</button>
+        </div>
+      </div>
+    );
+    return null;
+  };
+
+  // ── AUTH ────────────────────────────────────────────────────────────────────
+  if (screen === "auth") return (
+    <div style={S.root}>
+      <div style={S.authBg}>
+        <div style={S.authCard}>
+
+          <div style={S.logoWrap}>
+            <div style={S.logoRing}>
+              <span style={{fontSize:30,color:C.accent}}>◈</span>
+            </div>
+            <p style={S.logoArtist}>RATIBENZ</p>
+            <p style={S.logoSub}>Official Streaming · Web3</p>
+          </div>
+
+          <div style={S.pills}>
+            {["▶ Pay-to-stream","💠 Earn WAVE","🔓 Unlock tiers"].map(p => (
+              <span key={p} style={S.pill}>{p}</span>
+            ))}
+          </div>
+
+          <div style={S.authTabs}>
+            {["login","register"].map(m => (
+              <button key={m} onClick={() => setAuthMode(m)}
+                style={{...S.authTab,...(authMode===m?{background:C.accent,color:"#000"}:{})}}>
+                {m==="login"?"Sign In":"Join Free"}
+              </button>
+            ))}
+          </div>
+
+          <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:18}}>
+            {authMode==="register" && <input placeholder="Your name" style={S.inp} value={authForm.name} onChange={e=>setAuthForm({...authForm,name:e.target.value})}/>}
+            <input placeholder="Email" style={S.inp} type="email" value={authForm.email} onChange={e=>setAuthForm({...authForm,email:e.target.value})}/>
+            {authMode==="register" && <input placeholder="Phone (optional)" style={S.inp} type="tel" value={authForm.phone} onChange={e=>setAuthForm({...authForm,phone:e.target.value})}/>}
+            <input placeholder="Password" style={S.inp} type="password" value={authForm.password} onChange={e=>setAuthForm({...authForm,password:e.target.value})}/>
+          </div>
+
+          <button onClick={doAuth} style={S.authBtn}>
+            {authMode==="login"?"Enter the Frequency →":"Start Earning →"}
+          </button>
+          <p style={{textAlign:"center",color:C.muted,fontSize:10,marginTop:12}}>🔒 Secure · TRX wallet optional at signup</p>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ── HOME ────────────────────────────────────────────────────────────────────
+  if (screen === "home") return (
+    <div style={S.root}>
+      <RewardPop/><EarnBubble/><Modal/>
+      <div style={S.page}>
+
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"24px 16px 12px"}}>
+          <div>
+            <p style={{fontSize:20,fontWeight:700,margin:0}}>RATIBENZ 🎤</p>
+            <p style={{fontSize:11,color:C.muted,margin:"3px 0 0",letterSpacing:1}}>Stream · Earn · Unlock</p>
+          </div>
+          <div style={{...S.tierTag,borderColor:currentTier.color,color:currentTier.color}}>
+            {currentTier.icon} {currentTier.label}
+          </div>
+        </div>
+
+        <WalletBar/>
+
+        {/* WAVE progress */}
+        {nextTier && nextTier.wave > 0 && (
+          <div style={S.waveBox}>
+            <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+              <p style={{fontSize:11,color:C.muted,margin:0}}>WAVE to {nextTier.icon} {nextTier.label}</p>
+              <p style={{fontSize:11,color:C.accent,fontWeight:700,margin:0}}>{wave.toFixed(0)} / {nextTier.wave}</p>
+            </div>
+            <div style={S.waveTrack}><div style={{...S.waveFill,width:`${Math.min((wave/nextTier.wave)*100,100)}%`}}/></div>
+            <p style={{fontSize:10,color:C.muted,margin:"6px 0 0"}}>~{Math.ceil((nextTier.wave-wave)/(WAVE_PER_MIN*streakMult))} mins of streaming left</p>
+          </div>
+        )}
+
+        {/* Featured banner */}
+        <div style={S.featBanner}>
+          <div style={S.featGlow}/>
+          <p style={{fontSize:10,letterSpacing:3,color:"#FF4444",margin:"0 0 8px"}}>🔴 LATEST DROP</p>
+          <p style={{fontSize:26,fontWeight:700,margin:"0 0 4px",letterSpacing:2}}>BELIEVE</p>
+          <p style={{fontSize:12,color:C.muted,margin:"0 0 18px"}}>RATIBENZ · Unreleased · Free</p>
+          <div style={{display:"flex",gap:10,marginBottom:18}}>
+            <span style={S.econTag}>▶ 0.1 TRX/play</span>
+            <span style={S.econTag}>💠 +{(WAVE_PER_MIN*streakMult).toFixed(1)} WAVE/min</span>
+          </div>
+          <button onClick={() => playTrack(TRACKS[0])} style={S.featPlayBtn}>▶ Stream & Earn</button>
+        </div>
+
+        <p style={{fontSize:14,fontWeight:700,letterSpacing:1,padding:"0 16px",margin:"0 0 12px"}}>Your Tracks</p>
+
+        <div style={{padding:"0 16px"}}>
+          {TRACKS.map((track, i) => (
+            <div key={track.id} onClick={() => playTrack(track)}
+              style={{...S.trackRow, borderColor: currentTrack?.id===track.id ? C.accent : C.border}}>
+              <div style={{...S.trackDot, background: track.tier==="free"?C.green:C.gold}}/>
+              <div style={{flex:1}}>
+                <p style={{fontSize:14,fontWeight:700,margin:"0 0 3px",letterSpacing:1}}>{track.title}</p>
+                <p style={{fontSize:10,color:C.muted,margin:0}}>
+                  {track.tier==="free"?"🆓 Free":"👑 Elite"} · +{(WAVE_PER_MIN*streakMult).toFixed(1)} WAVE/min
+                </p>
+              </div>
+              <div style={{textAlign:"right"}}>
+                <p style={{fontSize:11,color:C.muted,margin:"0 0 4px"}}>{track.vibe}</p>
+                <div style={{display:"flex",gap:2,alignItems:"center",justifyContent:"flex-end"}}>
+                  {track.wf.slice(0,7).map((h,j) => (
+                    <div key={j} style={{width:2,height:h*0.25,background:C.accent+"60",borderRadius:1}}/>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Artist wallet */}
+        <div style={{margin:"16px 16px 0",background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:"14px 16px"}}>
+          <p style={{fontSize:10,letterSpacing:3,color:C.muted,margin:"0 0 6px"}}>ARTIST WALLET · TRON</p>
+          <p style={{fontSize:11,color:C.accent,wordBreak:"break-all",margin:"0 0 8px"}}>{ARTIST.wallet}</p>
+          <a href={ARTIST.tronscan} target="_blank" rel="noreferrer"
+            style={{fontSize:10,color:C.muted,textDecoration:"none",letterSpacing:1}}>
+            Verify on TronScan ↗
+          </a>
+        </div>
+
+      </div>
+      <BottomNav/>
+    </div>
+  );
+
+  // ── PLAYER ──────────────────────────────────────────────────────────────────
+  if (screen === "player") return (
+    <div style={S.root}>
+      <RewardPop/><EarnBubble/><Modal/>
+      <div style={{...S.page, background:`linear-gradient(180deg,#0D0D20 0%,${C.bg} 100%)`}}>
+
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"20px 16px 0"}}>
+          <button onClick={() => setScreen("home")} style={{background:"none",border:"none",color:C.muted,fontSize:22,cursor:"pointer"}}>‹</button>
+          <div style={{display:"flex",gap:8}}>
+            {isPlaying && <>
+              <span style={S.econTag}>+{(WAVE_PER_MIN*streakMult).toFixed(1)} WAVE/min</span>
+              <span style={{...S.econTag,color:"#FF6B6B",background:"rgba(255,107,107,0.1)"}}>-{TRX_PER_PLAY} TRX/play</span>
+            </>}
+          </div>
+        </div>
+
+        {/* Disc */}
+        <div style={{position:"relative",width:200,height:200,margin:"24px auto"}}>
+          <div style={{width:200,height:200,borderRadius:"50%",border:`3px solid ${currentTrack?C.accent:C.border}`,
+            background:`conic-gradient(#1A2A4A 0deg,#0D1A2E 180deg,#1A2A4A 360deg)`,
+            display:"flex",alignItems:"center",justifyContent:"center",
+            animation:isPlaying?"spin 8s linear infinite":"none"}}>
+            <div style={{width:90,height:90,borderRadius:"50%",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center"}}>
+              <span style={{fontSize:32}}>◈</span>
+            </div>
+          </div>
+          {isPlaying && <div style={{position:"absolute",inset:-10,borderRadius:"50%",boxShadow:`0 0 60px ${C.accent}25`,pointerEvents:"none"}}/>}
+        </div>
+
+        <div style={{textAlign:"center",marginBottom:20}}>
+          <p style={{fontSize:24,fontWeight:700,letterSpacing:3,margin:"0 0 6px"}}>{currentTrack?.title||"Select a track"}</p>
+          <p style={{fontSize:12,color:C.muted,letterSpacing:2,margin:0}}>RATIBENZ · {currentTrack?.vibe} Free Track</p>
+        </div>
+
+        {/* Economy HUD */}
+        <div style={{display:"flex",margin:"0 16px 20px",background:C.surface,border:`1px solid ${C.border}`,borderRadius:16,padding:"14px"}}>
+          <div style={{flex:1,textAlign:"center"}}>
+            <p style={{fontSize:20,fontWeight:700,color:C.accent,margin:"0 0 3px"}}>{wave.toFixed(1)}</p>
+            <p style={{fontSize:9,color:C.muted,letterSpacing:2,margin:0}}>WAVE EARNED</p>
+          </div>
+          <div style={{width:1,background:C.border,margin:"0 8px"}}/>
+          <div style={{flex:1,textAlign:"center"}}>
+            <div style={{width:10,height:10,borderRadius:"50%",background:isPlaying?"#4AFF88":"#FF4444",margin:"0 auto 6px",boxShadow:isPlaying?"0 0 12px #4AFF88":"none"}}/>
+            <p style={{fontSize:9,color:C.muted,letterSpacing:2,margin:0}}>{isPlaying?"STREAMING":"PAUSED"}</p>
+          </div>
+          <div style={{width:1,background:C.border,margin:"0 8px"}}/>
+          <div style={{flex:1,textAlign:"center"}}>
+            <p style={{fontSize:20,fontWeight:700,color:"#FF6B6B",margin:"0 0 3px"}}>{trx.toFixed(1)}</p>
+            <p style={{fontSize:9,color:C.muted,letterSpacing:2,margin:0}}>TRX LEFT</p>
+          </div>
+        </div>
+
+        {/* Waveform */}
+        <div style={{display:"flex",gap:2,alignItems:"center",justifyContent:"center",height:56,margin:"0 16px 16px"}}>
+          {(currentTrack?.wf||TRACKS[0].wf).map((h,i) => (
+            <div key={i} style={{width:3,height:h*0.65,borderRadius:2,transition:"background 0.1s",
+              background: i/(currentTrack?.wf.length||20) < progress/100 ? C.accent : "rgba(255,255,255,0.1)"}}/>
+          ))}
+        </div>
+
+        {/* Progress */}
+        <div style={{display:"flex",alignItems:"center",gap:10,padding:"0 16px",marginBottom:24}}>
+          <span style={{fontSize:10,color:C.muted,minWidth:32}}>{Math.floor(progress*0.042)}:{String(Math.floor((progress*0.042%1)*60)).padStart(2,"0")}</span>
+          <div style={{flex:1,height:4,background:C.border,borderRadius:2,position:"relative",cursor:"pointer"}}
+            onClick={e => { const r=e.currentTarget.getBoundingClientRect(); const p=((e.clientX-r.left)/r.width)*100; setProgress(p); if(audioRef.current?.duration) audioRef.current.currentTime=(p/100)*audioRef.current.duration; }}>
+            <div style={{height:"100%",width:`${progress}%`,background:C.accent,borderRadius:2}}/>
+            <div style={{position:"absolute",top:"50%",left:`${progress}%`,transform:"translate(-50%,-50%)",width:12,height:12,borderRadius:"50%",background:C.accent}}/>
+          </div>
+          <span style={{fontSize:10,color:C.muted,minWidth:32,textAlign:"right"}}>{currentTrack?.duration||"--:--"}</span>
+        </div>
+
+        {/* Controls */}
+        <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:32,marginBottom:28}}>
+          <button onClick={() => { const i=TRACKS.findIndex(t=>t.id===currentTrack?.id); if(i>0) playTrack(TRACKS[i-1]); }}
+            style={{background:"none",border:"none",color:C.muted,fontSize:24,cursor:"pointer"}}>⏮</button>
+          <button onClick={() => setIsPlaying(!isPlaying)}
+            style={{width:68,height:68,borderRadius:"50%",background:C.accent,border:"none",color:"#000",fontSize:26,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>
+            {isPlaying?"⏸":"▶"}
+          </button>
+          <button onClick={() => { const i=TRACKS.findIndex(t=>t.id===currentTrack?.id); if(i<TRACKS.length-1) playTrack(TRACKS[i+1]); }}
+            style={{background:"none",border:"none",color:C.muted,fontSize:24,cursor:"pointer"}}>⏭</button>
+        </div>
+
+        <div style={{display:"flex",gap:10,padding:"0 16px"}}>
+          <button onClick={() => trx<5&&setModal("topup")} style={S.footBtn}>💳 {trx.toFixed(1)} TRX</button>
+          <button onClick={() => setScreen("earn")} style={S.footBtn}>💠 {wave.toFixed(1)} WAVE</button>
+          <button onClick={() => setScreen("chat")} style={S.footBtn}>💬 Chat</button>
+        </div>
+      </div>
+      <BottomNav/>
+      <style>{`@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
+    </div>
+  );
+
+  // ── EARN ────────────────────────────────────────────────────────────────────
+  if (screen === "earn") return (
+    <div style={S.root}>
+      <Modal/>
+      <div style={S.page}>
+        <p style={{fontSize:22,fontWeight:700,padding:"24px 16px 4px",margin:0}}>💠 Earn Dashboard</p>
+        <p style={{fontSize:11,color:C.muted,padding:"0 16px",margin:"0 0 16px",letterSpacing:1}}>Stream RATIBENZ · Earn WAVE · Unlock tiers</p>
+
+        <div style={{margin:"0 16px 20px",background:`linear-gradient(135deg,rgba(232,255,60,0.08),rgba(232,255,60,0.02))`,border:`1px solid rgba(232,255,60,0.2)`,borderRadius:20,padding:"28px 24px",textAlign:"center",position:"relative",overflow:"hidden"}}>
+          <div style={{position:"absolute",top:-60,left:"50%",transform:"translateX(-50%)",width:200,height:200,borderRadius:"50%",background:"rgba(232,255,60,0.05)",pointerEvents:"none"}}/>
+          <p style={{fontSize:10,letterSpacing:4,color:C.muted,margin:"0 0 8px"}}>YOUR WAVE BALANCE</p>
+          <p style={{fontSize:52,fontWeight:700,color:C.accent,margin:"0 0 6px",letterSpacing:-2}}>{wave.toFixed(1)}</p>
+          <p style={{fontSize:12,color:C.muted,margin:0}}>≈ {(wave*0.01).toFixed(2)} TRX estimated value</p>
+        </div>
+
+        <div style={{display:"flex",gap:8,padding:"0 16px",marginBottom:20}}>
+          {[["🔥",`${streak}d`,"Streak"],["×",`${streakMult}x`,"Multiplier"],["💠",`${(WAVE_PER_MIN*streakMult).toFixed(1)}`,"WAVE/min"],["⏱",`${totalMins.toFixed(0)}m`,"Streamed"]].map(([icon,val,label]) => (
+            <div key={label} style={{flex:1,background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:"12px 6px",textAlign:"center"}}>
+              <p style={{fontSize:16,margin:"0 0 4px"}}>{icon}</p>
+              <p style={{fontSize:14,fontWeight:700,color:C.text,margin:"0 0 3px"}}>{val}</p>
+              <p style={{fontSize:9,color:C.muted,letterSpacing:1,margin:0}}>{label}</p>
+            </div>
+          ))}
+        </div>
+
+        <p style={{fontSize:14,fontWeight:700,letterSpacing:1,padding:"0 16px",margin:"0 0 12px"}}>Unlock Roadmap</p>
+        <div style={{padding:"0 16px",display:"flex",flexDirection:"column",gap:10}}>
+          {TIERS.map((tier, i) => {
+            const unlocked = i <= tierIdx;
+            const prog = tier.wave > 0 ? Math.min((wave/tier.wave)*100,100) : 100;
+            return (
+              <div key={tier.id} style={{display:"flex",alignItems:"center",gap:12,padding:"12px 14px",background:C.surface,border:`1px solid ${unlocked?tier.color:C.border}`,borderRadius:14}}>
+                <div style={{width:44,height:44,borderRadius:"50%",border:`2px solid ${tier.color}`,background:`${tier.color}15`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>{tier.icon}</div>
+                <div style={{flex:1}}>
+                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                    <p style={{fontSize:13,fontWeight:700,color:unlocked?tier.color:C.muted,margin:0}}>{tier.label}</p>
+                    <p style={{fontSize:10,color:C.muted,margin:0}}>{tier.wave>0?`${tier.wave} WAVE`:tier.trx>0?`${tier.trx} TRX`:"Free"}</p>
+                  </div>
+                  {tier.wave>0&&!unlocked&&<div style={{height:3,background:C.card,borderRadius:2,overflow:"hidden"}}><div style={{height:"100%",width:`${prog}%`,background:tier.color,borderRadius:2}}/></div>}
+                  {unlocked&&<p style={{fontSize:10,color:tier.color,margin:0}}>✓ Unlocked</p>}
+                </div>
+                {!unlocked&&<button onClick={() => { setModalTier(tier); setModal("unlock"); }} style={{border:`1px solid ${tier.color}`,background:"none",borderRadius:8,padding:"5px 10px",fontSize:10,cursor:"pointer",fontFamily:"inherit",color:tier.color}}>Unlock</button>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <BottomNav/>
+    </div>
+  );
+
+  // ── CHAT ────────────────────────────────────────────────────────────────────
+  if (screen === "chat") return (
+    <div style={S.root}>
+      <div style={{display:"flex",flexDirection:"column",height:"100vh",paddingBottom:70}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"18px 16px 12px",background:C.surface,borderBottom:`1px solid ${C.border}`}}>
+          <div>
+            <p style={{fontSize:18,fontWeight:700,margin:0}}>Fan Zone 💬</p>
+            <p style={{fontSize:10,color:C.green,margin:"3px 0 0"}}>🟢 RATIBENZ fans online</p>
+          </div>
+          <div style={{...S.tierTag,borderColor:currentTier.color,color:currentTier.color}}>
+            {currentTier.icon} {currentTier.label}
+          </div>
+        </div>
+        <div style={{flex:1,overflowY:"auto",padding:"12px 16px",display:"flex",flexDirection:"column",gap:10}}>
+          {chatMsgs.map(m => {
+            const self = m.user===(user?.name||"Fan");
+            return (
+              <div key={m.id} style={{...S.bubble,...(self?S.bubbleSelf:{})}}>
+                <span style={{fontSize:10,fontWeight:700,color:self?C.accent:C.muted,display:"block",marginBottom:4}}>{m.badge} {m.user}</span>
+                <p style={{fontSize:13,margin:0,lineHeight:1.5}}>{m.msg}</p>
+                <span style={{fontSize:10,color:C.muted,marginTop:4,display:"block"}}>{m.time}</span>
+              </div>
+            );
+          })}
+          <div ref={chatEndRef}/>
+        </div>
+        <div style={{display:"flex",gap:10,padding:"10px 16px",background:C.surface,borderTop:`1px solid ${C.border}`}}>
+          <input value={chatInput} onChange={e=>setChatInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&sendChat()}
+            placeholder={`Chat as ${currentTier.icon} ${currentTier.label}...`}
+            style={{...S.inp,flex:1,borderRadius:30,padding:"11px 16px"}}/>
+          <button onClick={sendChat} style={{width:44,height:44,borderRadius:"50%",background:C.accent,border:"none",color:"#000",fontSize:16,cursor:"pointer"}}>➤</button>
+        </div>
+      </div>
+      <BottomNav/>
+    </div>
+  );
+
+  // ── TIERS ───────────────────────────────────────────────────────────────────
+  if (screen === "tiers") return (
+    <div style={S.root}>
+      <Modal/>
+      <div style={S.page}>
+        <p style={{fontSize:22,fontWeight:700,padding:"24px 16px 4px",margin:0}}>🏆 Fan Tiers</p>
+        <p style={{fontSize:11,color:C.muted,padding:"0 16px",margin:"0 0 16px",letterSpacing:1}}>Stream more · Earn WAVE · Level up</p>
+        {TIERS.map((tier, i) => {
+          const unlocked = i <= tierIdx;
+          const current  = i === tierIdx;
+          return (
+            <div key={tier.id} style={{margin:"0 16px 12px",background:C.surface,border:`1px solid ${current?tier.color:unlocked?tier.color+"50":C.border}`,borderRadius:18,padding:"18px",position:"relative",overflow:"hidden"}}>
+              {current&&<div style={{position:"absolute",top:14,right:14,fontSize:9,padding:"3px 8px",borderRadius:10,fontWeight:700,letterSpacing:1,background:tier.color,color:"#000"}}>CURRENT</div>}
+              <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12}}>
+                <div style={{width:50,height:50,borderRadius:14,border:`2px solid ${tier.color}`,background:`${tier.color}15`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,flexShrink:0}}>{tier.icon}</div>
+                <div style={{flex:1}}>
+                  <p style={{fontSize:16,fontWeight:700,color:unlocked?tier.color:C.muted,margin:"0 0 3px"}}>{tier.label}</p>
+                  <p style={{fontSize:11,color:C.muted,margin:0}}>{tier.wave===0&&tier.trx===0?"Free · Default":tier.wave>0&&tier.trx===0?`${tier.wave} WAVE by streaming`:tier.trx>0&&tier.wave===0?`${tier.trx} TRX one-time`:`${tier.wave} WAVE + ${tier.trx} TRX`}</p>
+                </div>
+                {!unlocked&&<button onClick={() => { setModalTier(tier); setModal("unlock"); }} style={{border:`1px solid ${tier.color}`,background:"none",borderRadius:10,padding:"7px 14px",fontSize:11,cursor:"pointer",fontFamily:"inherit",color:tier.color}}>Unlock</button>}
+                {unlocked&&!current&&<span style={{color:"#4AFF88",fontSize:18}}>✓</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <BottomNav/>
+    </div>
+  );
+
+  return null;
+}
+
+// ── SHARED STYLES ─────────────────────────────────────────────────────────────
+const S = {
+  root:    { background:C.bg, minHeight:"100vh", fontFamily:"'Courier New',monospace", color:C.text, maxWidth:480, margin:"0 auto", overflow:"hidden", position:"relative" },
+  page:    { padding:"0 0 90px", minHeight:"100vh", overflowY:"auto" },
+  authBg:  { minHeight:"100vh", background:`radial-gradient(ellipse at 50% 0%,rgba(232,255,60,0.07) 0%,${C.bg} 55%)`, display:"flex", alignItems:"center", justifyContent:"center", padding:20 },
+  authCard:{ background:C.surface, border:`1px solid ${C.border}`, borderRadius:24, padding:"32px 24px", width:"100%", maxWidth:380 },
+  logoWrap:{ textAlign:"center", marginBottom:24 },
+  logoRing:{ width:64, height:64, borderRadius:"50%", border:`2px solid ${C.accent}`, display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 12px" },
+  logoArtist:{ fontSize:26, fontWeight:700, letterSpacing:6, color:C.accent, margin:0 },
+  logoSub: { fontSize:10, color:C.muted, letterSpacing:3, margin:"4px 0 0" },
+  pills:   { display:"flex", gap:6, justifyContent:"center", flexWrap:"wrap", marginBottom:20 },
+  pill:    { fontSize:10, background:C.card, border:`1px solid ${C.border}`, borderRadius:20, padding:"4px 10px", color:C.muted },
+  authTabs:{ display:"flex", background:C.card, borderRadius:10, padding:4, marginBottom:16 },
+  authTab: { flex:1, padding:"8px 0", background:"transparent", border:"none", color:C.muted, cursor:"pointer", borderRadius:8, fontSize:12, fontFamily:"inherit", letterSpacing:1 },
+  inp:     { padding:"12px 14px", background:C.card, border:`1px solid ${C.border}`, borderRadius:10, color:C.text, fontSize:13, fontFamily:"inherit", outline:"none", width:"100%", boxSizing:"border-box" },
+  authBtn: { width:"100%", padding:14, background:C.accent, border:"none", borderRadius:10, color:"#000", fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:"inherit" },
+  walletBar:{ display:"flex", alignItems:"center", margin:"0 16px 14px", background:C.surface, border:`1px solid ${C.border}`, borderRadius:14, padding:"10px 12px", gap:6 },
+  wItem:   { flex:1, textAlign:"center" },
+  wLabel:  { display:"block", fontSize:9, color:C.muted, letterSpacing:2, marginBottom:3 },
+  wVal:    { display:"block", fontSize:14, fontWeight:700 },
+  wDiv:    { width:1, height:28, background:C.border },
+  topupBtn:{ background:"#EF0027", border:"none", borderRadius:8, padding:"6px 10px", color:"#fff", fontSize:10, fontWeight:700, cursor:"pointer", fontFamily:"inherit", whiteSpace:"nowrap" },
+  tierTag: { border:"1px solid", borderRadius:20, padding:"5px 12px", fontSize:11, fontWeight:700, letterSpacing:1 },
+  waveBox: { margin:"0 16px 14px", background:C.surface, border:`1px solid ${C.border}`, borderRadius:14, padding:"12px 14px" },
+  waveTrack:{ height:4, background:C.card, borderRadius:2, overflow:"hidden" },
+  waveFill:{ height:"100%", background:`linear-gradient(90deg,#4AAFFF,${C.accent})`, borderRadius:2, transition:"width 0.5s" },
+  featBanner:{ margin:"0 16px 20px", background:`linear-gradient(135deg,#141428,#0D0D1E)`, border:`1px solid rgba(232,255,60,0.18)`, borderRadius:20, padding:"24px 20px", position:"relative", overflow:"hidden" },
+  featGlow:{ position:"absolute", top:-50, right:-50, width:160, height:160, borderRadius:"50%", background:"rgba(232,255,60,0.06)", pointerEvents:"none" },
+  econTag: { fontSize:11, color:C.accent, background:"rgba(232,255,60,0.1)", padding:"4px 10px", borderRadius:10 },
+  featPlayBtn:{ background:C.accent, color:"#000", border:"none", borderRadius:30, padding:"10px 24px", fontSize:12, fontWeight:700, cursor:"pointer", fontFamily:"inherit" },
+  trackRow:{ display:"flex", alignItems:"center", gap:12, padding:"12px 14px", background:C.surface, borderRadius:12, marginBottom:8, cursor:"pointer", border:"1px solid" },
+  trackDot:{ width:8, height:8, borderRadius:"50%", flexShrink:0 },
+  rewardPop:{ position:"fixed", top:20, left:"50%", transform:"translateX(-50%)", background:C.surface, border:"1px solid", borderRadius:16, padding:"14px 20px", zIndex:200, textAlign:"center", minWidth:260 },
+  rewardTitle:{ fontSize:16, fontWeight:700, margin:"0 0 4px" },
+  rewardSub:{ fontSize:12, color:C.muted, margin:0 },
+  earnBubble:{ position:"fixed", top:"45%", right:20, background:C.accent, color:"#000", padding:"4px 10px", borderRadius:20, fontSize:11, fontWeight:700, zIndex:200 },
+  nav:     { position:"fixed", bottom:0, left:"50%", transform:"translateX(-50%)", width:"100%", maxWidth:480, background:C.surface, borderTop:`1px solid ${C.border}`, display:"flex", padding:"10px 0 20px", zIndex:50 },
+  navBtn:  { flex:1, background:"none", border:"none", color:C.muted, cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:3, fontFamily:"inherit" },
+  overlay: { position:"fixed", inset:0, background:"rgba(0,0,0,0.88)", zIndex:100, display:"flex", alignItems:"flex-end", justifyContent:"center" },
+  sheet:   { background:C.surface, border:`1px solid ${C.border}`, borderRadius:"22px 22px 0 0", padding:"28px 20px 40px", width:"100%", maxWidth:480, maxHeight:"85vh", overflowY:"auto" },
+  sheetTitle:{ fontSize:20, fontWeight:700, margin:"0 0 6px", textAlign:"center" },
+  sheetSub:{ fontSize:12, color:C.muted, textAlign:"center", margin:"0 0 20px" },
+  topupGrid:{ display:"flex", flexWrap:"wrap", gap:10, marginBottom:16 },
+  topupOption:{ flex:"1 1 40%", background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"14px 8px", cursor:"pointer", textAlign:"center", fontFamily:"inherit", display:"flex", flexDirection:"column", gap:4, alignItems:"center" },
+  walletBox:{ background:C.card, borderRadius:12, padding:"12px 14px", marginBottom:14 },
+  pathCard:{ background:C.card, border:"1px solid", borderRadius:14, padding:"16px" },
+  pathLabel:{ fontSize:9, letterSpacing:3, color:C.muted, margin:"0 0 6px" },
+  pathVal: { fontSize:20, fontWeight:700, margin:"0 0 8px" },
+  pathTrack:{ height:4, background:C.border, borderRadius:2, overflow:"hidden", marginBottom:10 },
+  pathFill:{ height:"100%", borderRadius:2, transition:"width 0.4s" },
+  pathBtn: { width:"100%", padding:"12px 0", border:"none", borderRadius:10, fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:"inherit", marginTop:8 },
+  spinner: { width:32, height:32, borderRadius:"50%", border:"3px solid rgba(255,255,255,0.1)", borderTop:`3px solid ${C.gold}`, animation:"spin 1s linear infinite", margin:"0 auto 10px" },
+  closeBtn:{ display:"block", width:"100%", padding:12, background:"none", border:`1px solid ${C.border}`, borderRadius:12, color:C.muted, cursor:"pointer", fontFamily:"inherit", fontSize:12, marginTop:12 },
+  footBtn: { flex:1, padding:"10px 0", background:C.surface, border:`1px solid ${C.border}`, borderRadius:12, color:C.text, fontSize:11, cursor:"pointer", fontFamily:"inherit", textAlign:"center" },
+  bubble:  { background:C.surface, border:`1px solid ${C.border}`, borderRadius:"16px 16px 16px 4px", padding:"10px 14px", maxWidth:"80%" },
+  bubbleSelf:{ background:"rgba(232,255,60,0.06)", border:`1px solid rgba(232,255,60,0.2)`, borderRadius:"16px 16px 4px 16px", alignSelf:"flex-end" },
+};
